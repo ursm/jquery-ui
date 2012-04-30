@@ -5,12 +5,17 @@
  * Dual licensed under the MIT or GPL Version 2 licenses.
  * http://jquery.org/license
  *
+ * RGBA support by Mehdi Kabab <http://pioupioum.fr>
+ *
  * http://docs.jquery.com/UI/Effects/
  */
 ;jQuery.effects || (function($, undefined) {
 
 $.effects = {};
 
+$.extend($.support, {
+    "rgba": supportsRGBA()
+});
 
 
 /******************************************************************************/
@@ -22,16 +27,42 @@ $.each(['backgroundColor', 'borderBottomColor', 'borderLeftColor',
 	'borderRightColor', 'borderTopColor', 'borderColor', 'color', 'outlineColor'],
 function(i, attr) {
 	$.fx.step[attr] = function(fx) {
+		var tuples = [];
 		if (!fx.colorInit) {
 			fx.start = getColor(fx.elem, attr);
 			fx.end = getRGB(fx.end);
+			fx.alphavalue = {
+				start: 4 === fx.start.length,
+				end:   4 === fx.end.length
+			};
+			if ( !fx.alphavalue.start ) {
+				fx.start.push( 1 );
+			}
+			if ( !fx.alphavalue.end ) {
+				fx.end.push( 1 );
+			}
+			if ( $.support.rgba &&
+					(!fx.alphavalue.start && fx.alphavalue.end) || // RGB => RGBA
+					(fx.alphavalue.start && fx.alphavalue.end)  || // RGBA => RGBA
+					(fx.alphavalue.start && !fx.alphavalue.end)    // RGBA => RGB
+			) {
+				fx.colorModel = 'rgba';
+			} else {
+				fx.colorModel = 'rgb';
+			}
 			fx.colorInit = true;
 		}
 
-		fx.elem.style[attr] = 'rgb(' +
-			Math.max(Math.min(parseInt((fx.pos * (fx.end[0] - fx.start[0])) + fx.start[0], 10), 255), 0) + ',' +
-			Math.max(Math.min(parseInt((fx.pos * (fx.end[1] - fx.start[1])) + fx.start[1], 10), 255), 0) + ',' +
-			Math.max(Math.min(parseInt((fx.pos * (fx.end[2] - fx.start[2])) + fx.start[2], 10), 255), 0) + ')';
+		tuples.push( Math.max(Math.min( parseInt( (fx.pos * (fx.end[0] - fx.start[0])) + fx.start[0]), 255), 0) ); // R
+		tuples.push( Math.max(Math.min( parseInt( (fx.pos * (fx.end[1] - fx.start[1])) + fx.start[1]), 255), 0) ); // G
+		tuples.push( Math.max(Math.min( parseInt( (fx.pos * (fx.end[2] - fx.start[2])) + fx.start[2]), 255), 0) ); // B
+
+		if ( fx.colorModel == 'rgba' ) {
+			// Alpha
+			tuples.push( Math.max(Math.min( parseFloat((fx.pos * (fx.end[3] - fx.start[3])) + fx.start[3]), 1), 0).toFixed(2) );
+		}
+
+		fx.elem.style[attr] = fx.colorModel + "(" + tuples.join(",") + ")";
 	};
 });
 
@@ -39,21 +70,16 @@ function(i, attr) {
 // By Blair Mitchelmore
 // http://jquery.offput.ca/highlightFade/
 
-// Parse strings looking for color tuples [255,255,255]
+// Parse strings looking for color tuples [255,255,255[,1]]
 function getRGB(color) {
-		var result;
+		var result, ret,
+		    ralpha = '(?:,\\s*((?:1|0)(?:\\.0+)?|(?:0?\\.[0-9]+))\\s*)?\\)',
+		    rrgbdecimal = new RegExp( 'rgb(a)?\\(\\s*([0-9]{1,3})\\s*,\\s*([0-9]{1,3})\\s*,\\s*([0-9]{1,3})\\s*' + ralpha ),
+		    rrgbpercent = new RegExp( 'rgb(a)?\\(\\s*([0-9]+(?:\\.[0-9]+)?)\\%\\s*,\\s*([0-9]+(?:\\.[0-9]+)?)\\%\\s*,\\s*([0-9]+(?:\\.[0-9]+)?)\\%\\s*' + ralpha );
 
 		// Check if we're already dealing with an array of colors
-		if ( color && color.constructor == Array && color.length == 3 )
-				return color;
-
-		// Look for rgb(num,num,num)
-		if (result = /rgb\(\s*([0-9]{1,3})\s*,\s*([0-9]{1,3})\s*,\s*([0-9]{1,3})\s*\)/.exec(color))
-				return [parseInt(result[1],10), parseInt(result[2],10), parseInt(result[3],10)];
-
-		// Look for rgb(num%,num%,num%)
-		if (result = /rgb\(\s*([0-9]+(?:\.[0-9]+)?)\%\s*,\s*([0-9]+(?:\.[0-9]+)?)\%\s*,\s*([0-9]+(?:\.[0-9]+)?)\%\s*\)/.exec(color))
-				return [parseFloat(result[1])*2.55, parseFloat(result[2])*2.55, parseFloat(result[3])*2.55];
+		if ( color && color.constructor == Array && color.length == 3 && color.length <= 4 )
+			return color;
 
 		// Look for #a0b1c2
 		if (result = /#([a-fA-F0-9]{2})([a-fA-F0-9]{2})([a-fA-F0-9]{2})/.exec(color))
@@ -63,9 +89,27 @@ function getRGB(color) {
 		if (result = /#([a-fA-F0-9])([a-fA-F0-9])([a-fA-F0-9])/.exec(color))
 				return [parseInt(result[1]+result[1],16), parseInt(result[2]+result[2],16), parseInt(result[3]+result[3],16)];
 
-		// Look for rgba(0, 0, 0, 0) == transparent in Safari 3
-		if (result = /rgba\(0, 0, 0, 0\)/.exec(color))
-				return colors['transparent'];
+		// Look for rgb[a](num,num,num[,num])
+		if (result = rrgbdecimal.exec(color)) {
+			ret = [parseInt(result[2]), parseInt(result[3]), parseInt(result[4])];
+			// is rgba?
+			if (result[1] && result[5]) {
+				ret.push(parseFloat(result[5]));
+			}
+
+			return ret;
+		}
+
+		// Look for rgb[a](num%,num%,num%[,num])
+		if (result = rrgbpercent.exec(color)) {
+			ret = [parseFloat(result[2]) * 2.55, parseFloat(result[3]) * 2.55, parseFloat(result[4]) * 2.55];
+			// is rgba?
+			if (result[1] && result[5]) {
+				ret.push(parseFloat(result[5]));
+			}
+
+			return ret;
+		}
 
 		// Otherwise, we're most likely dealing with a named color
 		return colors[$.trim(color).toLowerCase()];
@@ -85,6 +129,22 @@ function getColor(elem, attr) {
 		} while ( elem = elem.parentNode );
 
 		return getRGB(color);
+};
+
+function supportsRGBA() {
+		var $script = jQuery('script:first'),
+				color = $script.css('color'),
+				result = false;
+		if (/^rgba/.test(color)) {
+						result = true;
+		} else {
+				try {
+						result = ( color != $script.css('color', 'rgba(0, 0, 0, 0.5)').css('color') );
+						$script.css('color', color);
+				} catch (e) {};
+		}
+
+		return result;
 };
 
 // Some named colors to work with
@@ -135,7 +195,7 @@ var colors = {
 	silver:[192,192,192],
 	white:[255,255,255],
 	yellow:[255,255,0],
-	transparent: [255,255,255]
+	transparent: ( jQuery.support.rgba ) ? [0,0,0,0] : [255,255,255]
 };
 
 
